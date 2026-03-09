@@ -1,7 +1,6 @@
 package parser_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/RogueTeam/pf/parser"
@@ -19,13 +18,10 @@ func Test_Parse(t *testing.T) {
 				assertions.Nil(err, "failed to open filename")
 				defer file.Close()
 
-				conf, err := parser.ParseReader(file)
+				_, err = parser.ParseReader(file)
 				if !assertions.Nil(err, "failed to parse configuration") {
 					return
 				}
-
-				c, _ := json.MarshalIndent(conf, "", "\t")
-				t.Log(string(c))
 			})
 		}
 	})

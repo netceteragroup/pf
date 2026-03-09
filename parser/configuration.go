@@ -3,7 +3,9 @@ package parser
 
 import (
 	"net/netip"
+	"strings"
 
+	"github.com/alecthomas/participle/v2/lexer"
 	"go4.org/netipx"
 )
 
@@ -45,9 +47,13 @@ type (
 		Value Value[Text]              `parser:"'overload' '<' @@ '>'"`
 		Flush *FlushStateOverloadEntry `parser:"@@?"`
 	}
+	MaxSrcConnRateCompact struct {
+		Value string `parser:"@AbbrevCIDR"`
+	}
 	MaxSrcConnRage struct {
-		Packets Value[Number] `parser:"'max-src-conn-rate' @@"`
-		Seconds Value[Number] `parser:"'/' @@"`
+		Packets Value[Number]          `parser:"'max-src-conn-rate' ( @@"`
+		Seconds Value[Number]          `parser:"'/' @@ )"`
+		Compact *MaxSrcConnRateCompact `parser:"| ('max-src-conn-rate' @@)"`
 	}
 	StateOption struct {
 		Max            *Value[Number]      `parser:"('max' @@)"`
@@ -89,6 +95,14 @@ type (
 		Key   string         `parser:"@Ident"`
 		Value Value[Literal] `parser:"@@"`
 	}
+	SyncookiesAdaptive struct {
+		Start Value[Number] `parser:"'(' 'start' @@ '%' ','"`
+		End   Value[Number] `parser:"'end' @@ '%' ')'"`
+	}
+	SyncookiesOption struct {
+		Mode     string              `parser:"'syncookies' @('never' | 'always' | 'adaptive')"`
+		Adaptive *SyncookiesAdaptive `parser:"@@?"`
+	}
 	Option struct {
 		Timeout             *TimeoutOption             `parser:"'set' (@@"`
 		RulesetOptimization *RulesetOptimizationOption `parser:"| @@"`
@@ -101,6 +115,7 @@ type (
 		SkipOn              *SkipOnOption              `parser:"| @@"`
 		Debug               *DebugOption               `parser:"| @@"`
 		Reassemble          *ReassembleOption          `parser:"| @@"`
+		Syncookies          *SyncookiesOption          `parser:"| @@"`
 		Other               *OtherOption               `parser:"| @@)"`
 	}
 	ActionBlockReturn struct {
@@ -138,20 +153,24 @@ type (
 		Protocol ValueOrBraceList[Protocol] `parser:"'proto' @@"`
 	}
 	IP struct {
-		Mask    *netipx.IPRange `parser:"@IPRange"`
-		CIDR    *netip.Prefix   `parser:"| @CIDR"`
-		Address *netip.Addr     `parser:"| @Address"`
+		Mask       *netipx.IPRange  `parser:"@IPRange"`
+		CIDR       *netip.Prefix    `parser:"| @CIDR"`
+		AbbrevCIDR *AbbreviatedCIDR `parser:"| @AbbrevCIDR"`
+		Address    *netip.Addr      `parser:"| @Address"`
 	}
 	Address struct {
-		IP         *Value[IP]   `parser:"@@"`
-		UrpfFailed BooleanSet   `parser:"| @('urpf-failed')"`
-		Text       *Value[Text] `parser:"| @@"`
+		IP                    *Value[IP]                    `parser:"@@"`
+		UrpfFailed            BooleanSet                    `parser:"| @('urpf-failed')"`
+		InterfaceWithModifier *InterfaceWithModifierLiteral `parser:"| @@"`
+		Text                  *Value[Text]                  `parser:"| @@"`
 	}
 	Host struct {
-		Negate   BooleanSet     `parser:"@('!')?"`
-		Address  *Address       `parser:"( ( @@"`
-		Weight   *Value[Number] `parser:"('weight' @@)? )"`
-		AsString *Value[Text]   `parser:"| ('<' @@ '>') )"`
+		Negate            BooleanSet     `parser:"@('!')?"`
+		ParenInterface    *Value[Text]   `parser:"( ('(' @@"`
+		InterfaceModifier *string        `parser:"(':' @('0' | 'broadcast' | 'network' | 'peer'))? ')')"`
+		Address           *Address       `parser:"| ( @@"`
+		Weight            *Value[Number] `parser:"('weight' @@)? )"`
+		AsString          *Value[Text]   `parser:"| ('<' @@ '>') )"`
 	}
 	Unary struct {
 		Operator string         `parser:"@('=' | '!=' | '<' | '<=' | '>' | '>=')?"`
@@ -188,11 +207,14 @@ type (
 		Os *Os `parser:"'from' @@"`
 	}
 	HostFrom struct {
-		FirstPort *HostFromFirstPort             `parser:"@@"`
-		FirstOs   *HostFromFirstOs               `parser:"| @@"`
-		Target    *ValueOrBraceList[HostsTarget] `parser:"| ('from' @@"`
-		Port      *Port                          `parser:"@@?"`
-		Os        *Os                            `parser:"@@? )"`
+		FirstPort   *HostFromFirstPort             `parser:"@@"`
+		FirstOs     *HostFromFirstOs               `parser:"| @@"`
+		ImplicitAny BooleanSet                     `parser:"| ( @('from') (?= 'to')"`
+		Port        *Port                          `parser:"@@?"`
+		Os          *Os                            `parser:"@@? )"`
+		Target      *ValueOrBraceList[HostsTarget] `parser:"| ('from' @@"`
+		Port2       *Port                          `parser:"@@?"`
+		Os2         *Os                            `parser:"@@? )"`
 	}
 	HostTo struct {
 		OnlyPort *Port                          `parser:"  ('to' @@)"`
@@ -360,14 +382,23 @@ type (
 		AddressFamily *AddressFamily `parser:"@@?"`
 		Label         *Label         `parser:"@@?"`
 	}
+	InterfaceWithModifierLiteral struct {
+		Interface string `parser:"@(Ident | Hostname | Filename)"`
+		Modifier  string `parser:"':' @('0' | 'broadcast' | 'network' | 'peer')"`
+	}
 	Literal struct {
-		Address Address       `parser:"@@"`
-		String  Value[Text]   `parser:"| @@"`
-		Number  Value[Number] `parser:"| @@"`
+		QuotedBraceList *QuotedLiteralList `parser:"@String"`
+		Address         Address            `parser:"| @@"`
+		String          Value[Text]        `parser:"| @@"`
+		Number          Value[Number]      `parser:"| @@"`
+	}
+	Include struct {
+		Filename Value[Text] `parser:"'include' @@"`
 	}
 	Assignment struct {
-		Variable string                    `parser:"@Ident"`
-		Value    ValueOrBraceList[Literal] `parser:"'=' @@"`
+		Variable              string                         `parser:"@(Ident | MacroIdent)"`
+		InterfaceWithModifier *InterfaceWithModifierLiteral  `parser:"'=' (@@"`
+		Value                 ValueBraceOrSpaceList[Literal] `parser:"| @@)"`
 	}
 	AnchorRule struct {
 		Name          Value[Text]                   `parser:"'anchor' @@"`
@@ -380,11 +411,12 @@ type (
 		Body          []*Line                       `parser:"'{' EOL (@@ EOL?)* EOL? '}'"`
 	}
 	TableAddress struct {
-		Hostname *string       `parser:"@Hostname"`
-		IfSpec   *IfSpec       `parser:"| @@"`
-		Self     BooleanSet    `parser:"| @('self')"`
-		Prefix   *netip.Prefix `parser:"| @CIDR"`
-		Address  *netip.Addr   `parser:"| @Address"`
+		Hostname   *string          `parser:"@Hostname"`
+		Self       BooleanSet       `parser:"| @('self')"`
+		IfSpec     *IfSpec          `parser:"| @@"`
+		Prefix     *netip.Prefix    `parser:"| @CIDR"`
+		AbbrevCIDR *AbbreviatedCIDR `parser:"| @AbbrevCIDR"`
+		Address    *netip.Addr      `parser:"| @Address"`
 	}
 	TableAddressSpec struct {
 		Negate BooleanSet   `parser:"@('!')?"`
@@ -398,22 +430,71 @@ type (
 		Addresses *ValueOrBraceList[TableAddressSpec] `parser:"| @@"`
 	}
 	TableRule struct {
-		Name    Value[Text]    `parser:"'table' '<' @@ '>'"`
-		Options []*TableOption `parser:"@@+"`
+		Name       Value[Text]    `parser:"'table' '<' @@ '>'"`
+		EmptyBlock BooleanSet     `parser:"( @('{' '}')"`
+		Options    []*TableOption `parser:"| @@+ )"`
 	}
 	Line struct {
+		Pos           lexer.Position `parser:""`
 		Option        *Option        `parser:"@@"`
 		PfRule        *PfRule        `parser:"| @@"`
 		Comment       *Comment       `parser:"| @Comment"`
 		AntiSpoofRule *AntiSpoofRule `parser:"| @@"`
+		Include       *Include       `parser:"| @@"`
 		Assignment    *Assignment    `parser:"| @@"`
 		// QueueRule *QueueRule     `parser:"| @@"`
 		AnchorRule *AnchorRule `parser:"| @@"`
 		// LoadAnchor *LoadAnchor    `parser:"| @@"`
-		TableRule *TableRule `parser:"| @@"`
-		// Include *Include        `parser:"| @@"`
+		TableRule *TableRule     `parser:"| @@"`
+		EndPos    lexer.Position `parser:""`
+
+		rawText string
 	}
 	Configuration struct {
-		Line []*Line `parser:"(@@ EOL?)*"`
+		Line []*Line `parser:"(EOL* @@ EOL?)* EOL*"`
+
+		source string // original input text, set after parsing
 	}
 )
+
+// RawText returns the original configuration line as it appeared in the input.
+func (l *Line) RawText() string {
+	return l.rawText
+}
+
+// setRawText stores the original line text on this Line.
+func (l *Line) setRawText(s string) {
+	l.rawText = s
+}
+
+// populateRawText extracts the original text for each Line from the stored source
+// using the positional information provided by participle.
+func (c *Configuration) populateRawText() {
+	if c == nil || c.source == "" {
+		return
+	}
+	lines := strings.Split(c.source, "\n")
+	for _, l := range c.Line {
+		if l == nil {
+			continue
+		}
+		// Pos.Line is 1-based
+		startLine := l.Pos.Line
+		endLine := l.EndPos.Line
+		if startLine < 1 {
+			continue
+		}
+		if endLine < startLine {
+			endLine = startLine
+		}
+		// Clamp to available lines
+		if startLine > len(lines) {
+			continue
+		}
+		if endLine > len(lines) {
+			endLine = len(lines)
+		}
+		raw := strings.Join(lines[startLine-1:endLine], "\n")
+		l.setRawText(strings.TrimRight(raw, "\r\n"))
+	}
+}
